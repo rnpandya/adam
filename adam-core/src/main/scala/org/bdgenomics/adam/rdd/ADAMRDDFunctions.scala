@@ -22,7 +22,7 @@ import java.util.logging.Level
 import org.apache.avro.Schema
 import org.apache.avro.generic.IndexedRecord
 import org.apache.hadoop.mapreduce.{ OutputFormat => NewOutputFormat }
-import org.apache.spark.Logging
+import org.apache.spark.{ SparkContext, Logging }
 import org.apache.spark.rdd.MetricsContext._
 import org.apache.spark.rdd.{ InstrumentedOutputFormat, RDD }
 import org.bdgenomics.adam.instrumentation.Timers._
@@ -86,13 +86,16 @@ class ADAMRDDFunctions[T <% IndexedRecord: Manifest](rdd: RDD[T]) extends Serial
  * @param rdd RDD over which aggregation is supported.
  */
 abstract class ADAMSequenceDictionaryRDDAggregator[T](rdd: RDD[T]) extends Serializable with Logging {
+
+  @transient lazy val sc: SparkContext = rdd.sparkContext
+
   /**
    * For a single RDD element, returns 0+ sequence record elements.
    *
    * @param elem Element from which to extract sequence records.
    * @return A seq of sequence records.
    */
-  def getSequenceRecordsFromElement(elem: T): scala.collection.Set[SequenceRecord]
+  def getSequenceRecordsFromElement(elem: T): Set[SequenceRecord]
 
   /**
    * Aggregates together a sequence dictionary from the different individual reference sequences
@@ -100,7 +103,7 @@ abstract class ADAMSequenceDictionaryRDDAggregator[T](rdd: RDD[T]) extends Seria
    *
    * @return A sequence dictionary describing the reference contigs in this dataset.
    */
-  def adamGetSequenceDictionary(): SequenceDictionary = {
+  def adamGetSequenceDictionary(performLexSort: Boolean = false): SequenceDictionary = {
     def mergeRecords(l: List[SequenceRecord], rec: T): List[SequenceRecord] = {
       val recs = getSequenceRecordsFromElement(rec)
 
@@ -118,8 +121,16 @@ abstract class ADAMSequenceDictionaryRDDAggregator[T](rdd: RDD[T]) extends Seria
       SequenceDictionary(recs: _*)
     }
 
-    rdd.mapPartitions(iter => Iterator(foldIterator(iter)), preservesPartitioning = true)
-      .reduce(_ ++ _)
+    val sd =
+      rdd
+        .mapPartitions(iter => Iterator(foldIterator(iter)), preservesPartitioning = true)
+        .reduce(_ ++ _)
+
+    if (performLexSort) {
+      implicit val ordering = SequenceOrderingByName
+      SequenceDictionary(sd.records.map(_.copy(referenceIndex = None)).sorted: _*)
+    } else
+      sd
   }
 
 }

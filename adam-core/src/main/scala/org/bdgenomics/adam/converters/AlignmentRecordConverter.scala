@@ -21,17 +21,20 @@ import htsjdk.samtools.{ SAMFileHeader, SAMRecord }
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models._
 import org.bdgenomics.adam.rich.RichAlignmentRecord
-import org.bdgenomics.formats.avro.AlignmentRecord
+import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment, Sequence }
+import scala.collection.JavaConversions._
 
 class AlignmentRecordConverter extends Serializable {
 
   /**
    * Converts a single record to FASTQ. FASTQ format is:
    *
+   * {{{
    * @readName
    * sequence
    * +<optional readname>
    * ASCII quality scores
+   * }}}
    *
    * @param adamRecord Read to convert to FASTQ.
    * @return Returns this read in string form.
@@ -42,13 +45,8 @@ class AlignmentRecordConverter extends Serializable {
     val readNameSuffix =
       if (maybeAddSuffix &&
         !AlignmentRecordConverter.readNameHasPairedSuffix(adamRecord) &&
-        adamRecord.getFirstOfPair != null) {
-        "/" + (
-          if (adamRecord.getFirstOfPair)
-            "1"
-          else
-            "2"
-        )
+        adamRecord.getReadPaired) {
+        "/%d".format(adamRecord.getReadNum + 1)
       } else {
         ""
       }
@@ -114,6 +112,10 @@ class AlignmentRecordConverter extends Serializable {
     Option(adamRecord.getMateAlignmentStart)
       .foreach(s => builder.setMateAlignmentStart(s.toInt + 1))
 
+    // set template length
+    Option(adamRecord.getInferredInsertSize)
+      .foreach(s => builder.setInferredInsertSize(s.toInt))
+
     // set flags
     Option(adamRecord.getReadPaired).foreach(p => {
       builder.setReadPairedFlag(p.booleanValue)
@@ -126,9 +128,9 @@ class AlignmentRecordConverter extends Serializable {
           .foreach(v => builder.setMateUnmappedFlag(!v.booleanValue))
         Option(adamRecord.getProperPair)
           .foreach(v => builder.setProperPairFlag(v.booleanValue))
-        Option(adamRecord.getFirstOfPair)
+        Option(adamRecord.getReadNum == 0)
           .foreach(v => builder.setFirstOfPairFlag(v.booleanValue))
-        Option(adamRecord.getSecondOfPair)
+        Option(adamRecord.getReadNum == 1)
           .foreach(v => builder.setSecondOfPairFlag(v.booleanValue))
       }
     })
@@ -175,11 +177,7 @@ class AlignmentRecordConverter extends Serializable {
     if (adamRecord.getAttributes != null) {
       val mp = RichAlignmentRecord(adamRecord).tags
       mp.foreach(a => {
-        if (a.tag == "TLEN") {
-          builder.setInferredInsertSize(a.value.asInstanceOf[Integer])
-        } else {
-          builder.setAttribute(a.tag, a.value)
-        }
+        builder.setAttribute(a.tag, a.value)
       })
     }
 
@@ -201,6 +199,18 @@ class AlignmentRecordConverter extends Serializable {
     rgd.recordGroups.foreach(group => samHeader.addReadGroup(group.toSAMReadGroupRecord()))
 
     samHeader
+  }
+
+  /**
+   * Converts a fragment to a set of reads.
+   *
+   * @param fragment Fragment to convert.
+   * @return The collection of alignments described by the fragment. If the fragment
+   *         doesn't contain any alignments, this method will return one unaligned
+   *         AlignmentRecord per sequence in the Fragment.
+   */
+  def convertFragment(fragment: Fragment): Iterable[AlignmentRecord] = {
+    asScalaBuffer(fragment.getAlignments).toIterable
   }
 }
 

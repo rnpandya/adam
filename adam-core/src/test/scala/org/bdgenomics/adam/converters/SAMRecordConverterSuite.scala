@@ -37,8 +37,8 @@ class SAMRecordConverterSuite extends FunSuite {
     val testSAMRecord = testIterator.iterator().next()
 
     // Creating the two SequenceRecords in file for SequenceDictionary
-    val testSequenceRecord1 = new SequenceRecord("1", 249250621L)
-    val testSequenceRecord2 = new SequenceRecord("2", 243199373L)
+    val testSequenceRecord1 = SequenceRecord("1", 249250621L)
+    val testSequenceRecord2 = SequenceRecord("2", 243199373L)
 
     // SequenceDictionary to be used as parameter during conversion
     val testSequenceDict = SequenceDictionary(testSequenceRecord1, testSequenceRecord2)
@@ -55,14 +55,14 @@ class SAMRecordConverterSuite extends FunSuite {
     assert(testAlignmentRecord.getEnd.toInt === testSAMRecord.getAlignmentEnd)
     assert(testAlignmentRecord.getMapq.toInt === testSAMRecord.getMappingQuality)
     assert(testAlignmentRecord.getStart.toInt === (testSAMRecord.getAlignmentStart - 1))
-    assert(!testAlignmentRecord.getFirstOfPair)
+    assert(testAlignmentRecord.getReadNum == 0)
     assert(testAlignmentRecord.getFailedVendorQualityChecks === testSAMRecord.getReadFailsVendorQualityCheckFlag)
     assert(!testAlignmentRecord.getPrimaryAlignment === testSAMRecord.getNotPrimaryAlignmentFlag)
     assert(!testAlignmentRecord.getReadMapped === testSAMRecord.getReadUnmappedFlag)
     assert(testAlignmentRecord.getReadName === testSAMRecord.getReadName)
     assert(testAlignmentRecord.getReadNegativeStrand === testSAMRecord.getReadNegativeStrandFlag)
     assert(!testAlignmentRecord.getReadPaired)
-    assert(!testAlignmentRecord.getSecondOfPair)
+    assert(testAlignmentRecord.getReadNum != 1)
     assert(testAlignmentRecord.getSupplementaryAlignment === testSAMRecord.getSupplementaryAlignmentFlag)
   }
 
@@ -77,8 +77,8 @@ class SAMRecordConverterSuite extends FunSuite {
     val testSAMRecord = testIterator.iterator().next()
 
     // Creating the two SequenceRecords in file for SequenceDictionary
-    val testSequenceRecord1 = new SequenceRecord("1", 249250621L)
-    val testSequenceRecord2 = new SequenceRecord("2", 243199373L)
+    val testSequenceRecord1 = SequenceRecord("1", 249250621L)
+    val testSequenceRecord2 = SequenceRecord("2", 243199373L)
 
     // SequenceDictionary to be used as parameter during conversion
     val testSequenceDict = SequenceDictionary(testSequenceRecord1, testSequenceRecord2)
@@ -95,14 +95,14 @@ class SAMRecordConverterSuite extends FunSuite {
     assert(testAlignmentRecord.getEnd.toInt === testSAMRecord.getAlignmentEnd)
     assert(testAlignmentRecord.getMapq.toInt === testSAMRecord.getMappingQuality)
     assert(testAlignmentRecord.getStart.toInt === (testSAMRecord.getAlignmentStart - 1))
-    assert(!testAlignmentRecord.getFirstOfPair)
+    assert(testAlignmentRecord.getReadNum == 0)
     assert(testAlignmentRecord.getFailedVendorQualityChecks === testSAMRecord.getReadFailsVendorQualityCheckFlag)
     assert(!testAlignmentRecord.getPrimaryAlignment === testSAMRecord.getNotPrimaryAlignmentFlag)
     assert(!testAlignmentRecord.getReadMapped === testSAMRecord.getReadUnmappedFlag)
     assert(testAlignmentRecord.getReadName === testSAMRecord.getReadName)
     assert(testAlignmentRecord.getReadNegativeStrand === testSAMRecord.getReadNegativeStrandFlag)
     assert(!testAlignmentRecord.getReadPaired)
-    assert(!testAlignmentRecord.getSecondOfPair)
+    assert(testAlignmentRecord.getReadNum != 1)
     assert(testAlignmentRecord.getSupplementaryAlignment === testSAMRecord.getSupplementaryAlignmentFlag)
   }
 
@@ -115,7 +115,7 @@ class SAMRecordConverterSuite extends FunSuite {
     // Obtain SAMRecord
     val newSAMRecordIter = {
       val samIter = asScalaIterator(newSAMReader.iterator())
-      samIter.toIterable.dropWhile(!_.getReadUnmappedFlag())
+      samIter.toIterable.dropWhile(!_.getReadUnmappedFlag)
     }
     val newSAMRecord = newSAMRecordIter.toIterator.next()
 
@@ -123,7 +123,7 @@ class SAMRecordConverterSuite extends FunSuite {
     newSAMRecord.setBaseQualityString("*")
 
     // SequenceRecord to be put into SequenceDictionary
-    val newSequenceRecord = new SequenceRecord("1", 249250621L)
+    val newSequenceRecord = SequenceRecord("1", 249250621L)
 
     // SequenceDictionary for conversion method
     val newSequenceDictionary = SequenceDictionary(newSequenceRecord)

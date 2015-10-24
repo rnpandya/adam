@@ -18,13 +18,16 @@
 package org.bdgenomics.adam.cli
 
 import htsjdk.samtools.ValidationStringency
+import org.apache.parquet.filter2.dsl.Dsl._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{ Logging, SparkContext }
 import org.bdgenomics.adam.algorithms.consensus._
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models.SnpTable
+import org.bdgenomics.adam.projections.{ AlignmentRecordField, Projection }
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd.ADAMSaveAnyArgs
+import org.bdgenomics.adam.rdd.read.MDTagging
 import org.bdgenomics.adam.rich.RichVariant
 import org.bdgenomics.formats.avro.AlignmentRecord
 import org.bdgenomics.utils.cli._
@@ -44,14 +47,18 @@ class TransformArgs extends Args4jBase with ADAMSaveAnyArgs with ParquetArgs {
   var inputPath: String = null
   @Argument(required = true, metaVar = "OUTPUT", usage = "Location to write the transformed data in ADAM/Parquet format", index = 1)
   var outputPath: String = null
+  @Args4jOption(required = false, name = "-limit_projection", usage = "Only project necessary fields. Only works for Parquet files.")
+  var limitProjection: Boolean = false
+  @Args4jOption(required = false, name = "-aligned_read_predicate", usage = "Only load aligned reads. Only works for Parquet files.")
+  var useAlignedReadPredicate: Boolean = false
   @Args4jOption(required = false, name = "-sort_reads", usage = "Sort the reads by referenceId and read position")
   var sortReads: Boolean = false
   @Args4jOption(required = false, name = "-mark_duplicate_reads", usage = "Mark duplicate reads")
   var markDuplicates: Boolean = false
   @Args4jOption(required = false, name = "-recalibrate_base_qualities", usage = "Recalibrate the base quality scores (ILLUMINA only)")
   var recalibrateBaseQualities: Boolean = false
-  @Args4jOption(required = false, name = "-strict_bqsr", usage = "Run BQSR with strict validation.")
-  var strictBQSR: Boolean = false
+  @Args4jOption(required = false, name = "-stringency", usage = "Stringency level for various checks; can be SILENT, LENIENT, or STRICT. Defaults to LENIENT")
+  var stringency: String = "LENIENT"
   @Args4jOption(required = false, name = "-dump_observations", usage = "Local path to dump BQSR observations to. Outputs CSV format.")
   var observationsPath: String = null
   @Args4jOption(required = false, name = "-known_snps", usage = "Sites-only VCF giving location of known SNPs")
@@ -84,15 +91,31 @@ class TransformArgs extends Args4jBase with ADAMSaveAnyArgs with ParquetArgs {
   var forceLoadParquet: Boolean = false
   @Args4jOption(required = false, name = "-single", usage = "Saves OUTPUT as single file")
   var asSingleFile: Boolean = false
+  @Args4jOption(required = false, name = "-paired_fastq", usage = "When converting two (paired) FASTQ files to ADAM, pass the path to the second file here.")
+  var pairedFastqFile: String = null
+  @Args4jOption(required = false, name = "-record_group", usage = "Set converted FASTQs' record-group names to this value; if empty-string is passed, use the basename of the input file, minus the extension.")
+  var fastqRecordGroup: String = null
+  @Args4jOption(required = false, name = "-concat", usage = "Concatenate this file with <INPUT> and write the result to <OUTPUT>")
+  var concatFilename: String = null
+  @Args4jOption(required = false, name = "-add_md_tags", usage = "Add MD Tags to reads based on the FASTA (or equivalent) file passed to this option.")
+  var mdTagsReferenceFile: String = null
+  @Args4jOption(required = false, name = "-md_tag_fragment_size", usage = "When adding MD tags to reads, load the reference in fragments of this size.")
+  var mdTagsFragmentSize: Long = 1000000L
+  @Args4jOption(required = false, name = "-md_tag_overwrite", usage = "When adding MD tags to reads, overwrite existing incorrect tags.")
+  var mdTagsOverwrite: Boolean = false
 }
 
 class Transform(protected val args: TransformArgs) extends BDGSparkCommand[TransformArgs] with Logging {
   val companion = Transform
 
+  val stringency = ValidationStringency.valueOf(args.stringency)
+
   def apply(rdd: RDD[AlignmentRecord]): RDD[AlignmentRecord] = {
 
     var adamRecords = rdd
     val sc = rdd.context
+
+    val stringencyOpt = Option(args.stringency).map(ValidationStringency.valueOf(_))
 
     if (args.repartition != -1) {
       log.info("Repartitioning reads to to '%d' partitions".format(args.repartition))
@@ -110,25 +133,24 @@ class Transform(protected val args: TransformArgs) extends BDGSparkCommand[Trans
         .fold(new ConsensusGeneratorFromReads().asInstanceOf[ConsensusGenerator])(
           new ConsensusGeneratorFromKnowns(_, sc).asInstanceOf[ConsensusGenerator])
 
-      adamRecords = adamRecords.adamRealignIndels(consensusGenerator,
-        false,
+      adamRecords = adamRecords.adamRealignIndels(
+        consensusGenerator,
+        isSorted = false,
         args.maxIndelSize,
         args.maxConsensusNumber,
         args.lodThreshold,
-        args.maxTargetSize)
+        args.maxTargetSize
+      )
     }
 
     if (args.recalibrateBaseQualities) {
       log.info("Recalibrating base qualities")
       val knownSnps: SnpTable = createKnownSnpsTable(sc)
-      val stringency = if (args.strictBQSR) {
-        ValidationStringency.STRICT
-      } else {
-        ValidationStringency.LENIENT
-      }
-      adamRecords = adamRecords.adamBQSR(sc.broadcast(knownSnps),
+      adamRecords = adamRecords.adamBQSR(
+        sc.broadcast(knownSnps),
         Option(args.observationsPath),
-        stringency)
+        stringency
+      )
     }
 
     if (args.coalesce != -1) {
@@ -142,22 +164,102 @@ class Transform(protected val args: TransformArgs) extends BDGSparkCommand[Trans
       adamRecords = adamRecords.adamSortReadsByReferencePosition()
     }
 
+    if (args.mdTagsReferenceFile != null) {
+      log.info(s"Adding MDTags to reads based on reference file ${args.mdTagsReferenceFile}")
+      adamRecords =
+        MDTagging(
+          adamRecords,
+          args.mdTagsReferenceFile,
+          fragmentLength = args.mdTagsFragmentSize,
+          overwriteExistingTags = args.mdTagsOverwrite,
+          validationStringency = stringencyOpt.getOrElse(ValidationStringency.STRICT)
+        )
+    }
+
     adamRecords
   }
 
   def run(sc: SparkContext) {
-    this.apply({
+    // throw exception if aligned read predicate or projection flags are used improperly
+    if ((args.useAlignedReadPredicate || args.limitProjection) &&
+      (args.forceLoadBam || args.forceLoadFastq || args.forceLoadIFastq)) {
+      throw new IllegalArgumentException(
+        "-aligned_read_predicate and -limit_projection only apply to Parquet files, but a non-Parquet force load flag was passed.")
+    }
+
+    val rdd =
       if (args.forceLoadBam) {
         sc.loadBam(args.inputPath)
       } else if (args.forceLoadFastq) {
-        sc.loadUnpairedFastq(args.inputPath)
+        sc.loadFastq(args.inputPath, Option(args.pairedFastqFile), Option(args.fastqRecordGroup), stringency)
       } else if (args.forceLoadIFastq) {
         sc.loadInterleavedFastq(args.inputPath)
-      } else if (args.forceLoadParquet) {
-        sc.loadParquetAlignments(args.inputPath)
+      } else if (args.forceLoadParquet ||
+        args.limitProjection ||
+        args.useAlignedReadPredicate) {
+        val pred = if (args.useAlignedReadPredicate) {
+          Some((BooleanColumn("readMapped") === true))
+        } else {
+          None
+        }
+        val proj = if (args.limitProjection) {
+          Some(Projection(AlignmentRecordField.contig,
+            AlignmentRecordField.start,
+            AlignmentRecordField.end,
+            AlignmentRecordField.mapq,
+            AlignmentRecordField.readName,
+            AlignmentRecordField.sequence,
+            AlignmentRecordField.cigar,
+            AlignmentRecordField.qual,
+            AlignmentRecordField.recordGroupId,
+            AlignmentRecordField.recordGroupName,
+            AlignmentRecordField.readPaired,
+            AlignmentRecordField.readMapped,
+            AlignmentRecordField.readNegativeStrand,
+            AlignmentRecordField.firstOfPair,
+            AlignmentRecordField.secondOfPair,
+            AlignmentRecordField.primaryAlignment,
+            AlignmentRecordField.duplicateRead,
+            AlignmentRecordField.mismatchingPositions,
+            AlignmentRecordField.secondaryAlignment,
+            AlignmentRecordField.supplementaryAlignment))
+        } else {
+          None
+        }
+        sc.loadParquetAlignments(args.inputPath,
+          predicate = pred,
+          projection = proj)
       } else {
-        sc.loadAlignments(args.inputPath)
+        sc.loadAlignments(
+          args.inputPath,
+          filePath2Opt = Option(args.pairedFastqFile),
+          recordGroupOpt = Option(args.fastqRecordGroup),
+          stringency = stringency
+        )
       }
+
+    // Optionally load a second RDD and concatenate it with the first.
+    // Paired-FASTQ loading is avoided here because that wouldn't make sense
+    // given that it's already happening above.
+    val concatRddOpt =
+      Option(args.concatFilename).map(concatFilename =>
+        if (args.forceLoadBam) {
+          sc.loadBam(concatFilename)
+        } else if (args.forceLoadIFastq) {
+          sc.loadInterleavedFastq(concatFilename)
+        } else if (args.forceLoadParquet) {
+          sc.loadParquetAlignments(concatFilename)
+        } else {
+          sc.loadAlignments(
+            concatFilename,
+            recordGroupOpt = Option(args.fastqRecordGroup)
+          )
+        }
+      )
+
+    this.apply(concatRddOpt match {
+      case Some(concatRdd) => rdd ++ concatRdd
+      case None            => rdd
     }).adamSave(args, args.sortReads)
   }
 

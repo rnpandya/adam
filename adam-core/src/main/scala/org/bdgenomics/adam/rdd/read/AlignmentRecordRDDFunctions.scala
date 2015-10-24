@@ -18,7 +18,6 @@
 package org.bdgenomics.adam.rdd.read
 
 import java.io.StringWriter
-
 import htsjdk.samtools.{ SAMFileHeader, SAMTextHeaderCodec, SAMTextWriter, ValidationStringency }
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{ FileSystem, Path }
@@ -69,11 +68,11 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
                    isSorted: Boolean = false): Boolean = {
     if (args.outputPath.endsWith(".sam")) {
       log.info("Saving data in SAM format")
-      rdd.adamSAMSave(args.outputPath, asSingleFile = args.asSingleFile)
+      rdd.adamSAMSave(args.outputPath, asSingleFile = args.asSingleFile, isSorted = isSorted)
       true
     } else if (args.outputPath.endsWith(".bam")) {
       log.info("Saving data in BAM format")
-      rdd.adamSAMSave(args.outputPath, asSam = false, asSingleFile = args.asSingleFile)
+      rdd.adamSAMSave(args.outputPath, asSam = false, asSingleFile = args.asSingleFile, isSorted = isSorted)
       true
     } else
       false
@@ -210,8 +209,8 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
     }
   }
 
-  def getSequenceRecordsFromElement(elem: AlignmentRecord): scala.collection.Set[SequenceRecord] = {
-    SequenceRecord.fromADAMRecord(elem)
+  def getSequenceRecordsFromElement(elem: AlignmentRecord): Set[SequenceRecord] = {
+    SequenceRecord.fromADAMRecord(elem).toSet
   }
 
   /**
@@ -235,7 +234,7 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
    */
   def adamConvertToSAM(isSorted: Boolean = false): (RDD[SAMRecordWritable], SAMFileHeader) = ConvertToSAM.time {
     // collect global summary data
-    val sd = rdd.adamGetSequenceDictionary()
+    val sd = rdd.adamGetSequenceDictionary(isSorted)
     val rgd = rdd.adamGetReadGroupDictionary()
 
     // create conversion object
@@ -419,22 +418,38 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
           record.getReadName.toString.dropRight(2)
       })
 
-    if (validationStringency == ValidationStringency.STRICT) {
-      val readIDsWithCounts: RDD[(String, Int)] = readsByID.mapValues(_.size)
-      val unpairedReadIDsWithCounts: RDD[(String, Int)] = readIDsWithCounts.filter(_._2 != 2)
-      maybePersist(unpairedReadIDsWithCounts)
+    validationStringency match {
+      case ValidationStringency.STRICT | ValidationStringency.LENIENT =>
+        val readIDsWithCounts: RDD[(String, Int)] = readsByID.mapValues(_.size)
+        val unpairedReadIDsWithCounts: RDD[(String, Int)] = readIDsWithCounts.filter(_._2 != 2)
+        maybePersist(unpairedReadIDsWithCounts)
 
-      val numUnpairedReadIDsWithCounts: Long = unpairedReadIDsWithCounts.count()
-      if (numUnpairedReadIDsWithCounts != 0) {
-        val readNameOccurrencesMap: collection.Map[Int, Long] = unpairedReadIDsWithCounts.map(_._2).countByValue()
-        throw new Exception(
-          "Found %d read names that don't occur exactly twice:\n%s\n\nSamples:\n%s".format(
-            numUnpairedReadIDsWithCounts,
-            readNameOccurrencesMap.map(p => "%dx:\t%d".format(p._1, p._2)).mkString("\t", "\n\t", ""),
-            unpairedReadIDsWithCounts.take(100).map(_._1).mkString("\t", "\n\t", "")
-          )
-        )
-      }
+        val numUnpairedReadIDsWithCounts: Long = unpairedReadIDsWithCounts.count()
+        if (numUnpairedReadIDsWithCounts != 0) {
+          val readNameOccurrencesMap: collection.Map[Int, Long] = unpairedReadIDsWithCounts.map(_._2).countByValue()
+
+          val msg =
+            List(
+              s"Found $numUnpairedReadIDsWithCounts read names that don't occur exactly twice:",
+
+              readNameOccurrencesMap.map({
+                case (numOccurrences, numReadNames) => s"${numOccurrences}x:\t$numReadNames"
+              }).take(100).mkString("\t", "\n\t", if (readNameOccurrencesMap.size > 100) "\n\t…" else ""),
+              "",
+
+              "Samples:",
+              unpairedReadIDsWithCounts
+                .take(100)
+                .map(_._1)
+                .mkString("\t", "\n\t", if (numUnpairedReadIDsWithCounts > 100) "\n\t…" else "")
+            ).mkString("\n")
+
+          if (validationStringency == ValidationStringency.STRICT)
+            throw new IllegalArgumentException(msg)
+          else if (validationStringency == ValidationStringency.LENIENT)
+            logError(msg)
+        }
+      case ValidationStringency.SILENT =>
     }
 
     val pairedRecords: RDD[AlignmentRecord] = readsByID.filter(_._2.size == 2).map(_._2).flatMap(x => x)
@@ -443,11 +458,11 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
 
     maybeUnpersist(rdd.unpersist())
 
-    val firstInPairRecords: RDD[AlignmentRecord] = pairedRecords.filter(_.getFirstOfPair)
+    val firstInPairRecords: RDD[AlignmentRecord] = pairedRecords.filter(_.getReadNum == 0)
     maybePersist(firstInPairRecords)
     val numFirstInPairRecords = firstInPairRecords.count()
 
-    val secondInPairRecords: RDD[AlignmentRecord] = pairedRecords.filter(_.getSecondOfPair)
+    val secondInPairRecords: RDD[AlignmentRecord] = pairedRecords.filter(_.getReadNum == 1)
     maybePersist(secondInPairRecords)
     val numSecondInPairRecords = secondInPairRecords.count()
 
@@ -464,11 +479,11 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
 
     if (validationStringency == ValidationStringency.STRICT) {
       firstInPairRecords.foreach(read =>
-        if (read.getSecondOfPair)
+        if (read.getReadNum == 1)
           throw new Exception("Read %s found with first- and second-of-pair set".format(read.getReadName))
       )
       secondInPairRecords.foreach(read =>
-        if (read.getFirstOfPair)
+        if (read.getReadNum == 0)
           throw new Exception("Read %s found with first- and second-of-pair set".format(read.getReadName))
       )
     }
@@ -585,14 +600,12 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
         AlignmentRecord.newBuilder(kv._2._1)
           .setReadPaired(true)
           .setProperPair(true)
-          .setFirstOfPair(true)
-          .setSecondOfPair(false)
+          .setReadNum(0)
           .build(),
         AlignmentRecord.newBuilder(kv._2._2)
           .setReadPaired(true)
           .setProperPair(true)
-          .setFirstOfPair(false)
-          .setSecondOfPair(true)
+          .setReadNum(1)
           .build()
       ))
 
@@ -602,5 +615,9 @@ class AlignmentRecordRDDFunctions(rdd: RDD[AlignmentRecord])
 
     // return
     finalRdd
+  }
+
+  def toFragments: RDD[Fragment] = {
+    adamSingleReadBuckets.map(_.toFragment)
   }
 }

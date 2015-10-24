@@ -33,7 +33,7 @@ import org.apache.parquet.filter2.predicate.FilterPredicate
 class ADAMContextSuite extends ADAMFunSuite {
 
   sparkTest("sc.loadParquet should not fail on unmapped reads") {
-    val readsFilepath = ClassLoader.getSystemClassLoader.getResource("unmapped.sam").getFile
+    val readsFilepath = resourcePath("unmapped.sam")
 
     // Convert the reads12.sam file into a parquet file
     val bamReads: RDD[AlignmentRecord] = sc.loadAlignments(readsFilepath)
@@ -44,7 +44,7 @@ class ADAMContextSuite extends ADAMFunSuite {
     //load an existing file from the resources and save it as an ADAM file.
     //This way we are not dependent on the ADAM format (as we would if we used a pre-made ADAM file)
     //but we are dependent on the unmapped.sam file existing, maybe I should make a new one
-    val readsFilepath = ClassLoader.getSystemClassLoader.getResource("unmapped.sam").getFile
+    val readsFilepath = resourcePath("unmapped.sam")
     val bamReads: RDD[AlignmentRecord] = sc.loadAlignments(readsFilepath)
     //save it as an Adam file so we can test the Adam loader
     val bamReadsAdamFile = new File(Files.createTempDir(), "bamReads.adam")
@@ -58,19 +58,19 @@ class ADAMContextSuite extends ADAMFunSuite {
   }
 
   sparkTest("can read a small .SAM file") {
-    val path = ClassLoader.getSystemClassLoader.getResource("small.sam").getFile
+    val path = resourcePath("small.sam")
     val reads: RDD[AlignmentRecord] = sc.loadAlignments(path)
     assert(reads.count() === 20)
   }
 
   sparkTest("can read a small .SAM with all attribute tag types") {
-    val path = ClassLoader.getSystemClassLoader.getResource("tags.sam").getFile
+    val path = resourcePath("tags.sam")
     val reads: RDD[AlignmentRecord] = sc.loadAlignments(path)
     assert(reads.count() === 7)
   }
 
   sparkTest("can filter a .SAM file based on quality") {
-    val path = ClassLoader.getSystemClassLoader.getResource("small.sam").getFile
+    val path = resourcePath("small.sam")
     val reads: RDD[AlignmentRecord] = sc.loadAlignments(path)
       .filter(a => (a.getReadMapped && a.getMapq > 30))
     assert(reads.count() === 18)
@@ -250,20 +250,17 @@ class ADAMContextSuite extends ADAMFunSuite {
   }
 
   sparkTest("can read a small .vcf file") {
-    val path = ClassLoader.getSystemClassLoader.getResource("small.vcf").getFile
+    val path = resourcePath("small.vcf")
 
-    val vcs: RDD[VariantContext] = sc.loadGenotypes(path).toVariantContext
-    assert(vcs.count === 5)
+    val vcs = sc.loadGenotypes(path).toVariantContext.collect.sortBy(_.position)
+    assert(vcs.size === 5)
 
-    val vc = vcs.first
+    val vc = vcs.head
     assert(vc.genotypes.size === 3)
 
     val gt = vc.genotypes.head
     assert(gt.getVariantCallingAnnotations != null)
-    assert(gt.getVariantCallingAnnotations.getReadDepth === 69)
-    // Recall we are testing parsing, so we assert that our value is
-    // the same as should have been parsed
-    assert(gt.getVariantCallingAnnotations.getClippingRankSum === java.lang.Float.valueOf("0.138"))
+    assert(gt.getReadDepth === 20)
   }
 
   (1 to 4) foreach { testNumber =>
@@ -276,13 +273,13 @@ class ADAMContextSuite extends ADAMFunSuite {
       if (testNumber == 1) {
         assert(reads.count === 6)
         assert(reads.filter(_.getReadPaired).count === 6)
-        assert(reads.filter(_.getFirstOfPair).count === 3)
-        assert(reads.filter(_.getSecondOfPair).count === 3)
+        assert(reads.filter(_.getReadNum == 0).count === 3)
+        assert(reads.filter(_.getReadNum == 1).count === 3)
       } else {
         assert(reads.count === 4)
         assert(reads.filter(_.getReadPaired).count === 4)
-        assert(reads.filter(_.getFirstOfPair).count === 2)
-        assert(reads.filter(_.getSecondOfPair).count === 2)
+        assert(reads.filter(_.getReadNum == 0).count === 2)
+        assert(reads.filter(_.getReadNum == 1).count === 2)
       }
 
       assert(reads.collect.forall(_.getSequence.toString.length === 250))
@@ -314,7 +311,7 @@ class ADAMContextSuite extends ADAMFunSuite {
   }
 
   sparkTest("filter on load using the filter2 API") {
-    val path = ClassLoader.getSystemClassLoader.getResource("bqsr1.vcf").getFile
+    val path = resourcePath("bqsr1.vcf")
 
     val variants: RDD[Variant] = sc.loadVariants(path)
     assert(variants.count === 681)

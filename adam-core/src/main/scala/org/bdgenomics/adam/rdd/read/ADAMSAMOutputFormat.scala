@@ -17,11 +17,18 @@
  */
 package org.bdgenomics.adam.rdd.read
 
-import org.seqdoop.hadoop_bam.{ SAMRecordWritable, KeyIgnoringAnySAMOutputFormat, SAMFormat }
 import htsjdk.samtools.SAMFileHeader
+import hbparquet.hadoop.util.ContextUtil
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.{ OutputFormat, RecordWriter, TaskAttemptContext }
 import org.apache.spark.rdd.InstrumentedOutputFormat
 import org.bdgenomics.adam.instrumentation.Timers
-import org.apache.hadoop.mapreduce.OutputFormat
+import org.seqdoop.hadoop_bam.{
+  KeyIgnoringAnySAMOutputFormat,
+  KeyIgnoringSAMRecordWriter,
+  SAMFormat,
+  SAMRecordWritable
+}
 
 object ADAMSAMOutputFormat extends Serializable {
 
@@ -71,4 +78,31 @@ class ADAMSAMOutputFormat[K]
 class InstrumentedADAMSAMOutputFormat[K] extends InstrumentedOutputFormat[K, org.seqdoop.hadoop_bam.SAMRecordWritable] {
   override def timerName(): String = Timers.WriteSAMRecord.timerName
   override def outputFormatClass(): Class[_ <: OutputFormat[K, SAMRecordWritable]] = classOf[ADAMSAMOutputFormat[K]]
+}
+
+class ADAMSAMOutputFormatHeaderLess[K]
+    extends KeyIgnoringAnySAMOutputFormat[K](SAMFormat.valueOf("SAM")) with Serializable {
+
+  setWriteHeader(false)
+
+  override def getRecordWriter(context: TaskAttemptContext): RecordWriter[K, SAMRecordWritable] = {
+    val conf = ContextUtil.getConfiguration(context)
+
+    // where is our header file?
+    val path = new Path(conf.get("org.bdgenomics.adam.rdd.read.bam_header_path"))
+
+    // read the header file
+    readSAMHeaderFrom(path, conf)
+
+    // now that we have the header set, we need to make a record reader
+    return new KeyIgnoringSAMRecordWriter(getDefaultWorkFile(context, ""),
+      header,
+      false,
+      context)
+  }
+}
+
+class InstrumentedADAMSAMOutputFormatHeaderLess[K] extends InstrumentedOutputFormat[K, org.seqdoop.hadoop_bam.SAMRecordWritable] {
+  override def timerName(): String = Timers.WriteSAMRecord.timerName
+  override def outputFormatClass(): Class[_ <: OutputFormat[K, SAMRecordWritable]] = classOf[ADAMSAMOutputFormatHeaderLess[K]]
 }

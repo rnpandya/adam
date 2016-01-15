@@ -25,8 +25,7 @@ import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.serialization.AvroSerializer
 import org.bdgenomics.formats.avro.{
   AlignmentRecord,
-  Fragment,
-  Sequence
+  Fragment
 }
 import scala.collection.JavaConversions._
 
@@ -46,9 +45,10 @@ object SingleReadBucket extends Logging {
   }
 }
 
-case class SingleReadBucket(primaryMapped: Iterable[AlignmentRecord] = Seq.empty,
-                            secondaryMapped: Iterable[AlignmentRecord] = Seq.empty,
-                            unmapped: Iterable[AlignmentRecord] = Seq.empty) {
+case class SingleReadBucket(
+    primaryMapped: Iterable[AlignmentRecord] = Seq.empty,
+    secondaryMapped: Iterable[AlignmentRecord] = Seq.empty,
+    unmapped: Iterable[AlignmentRecord] = Seq.empty) {
   // Note: not a val in order to save serialization/memory cost
   def allReads = {
     primaryMapped ++ secondaryMapped ++ unmapped
@@ -71,10 +71,6 @@ case class SingleReadBucket(primaryMapped: Iterable[AlignmentRecord] = Seq.empty
           builder.setFragmentSize(is.toInt)
         })
       })
-
-    // set platform unit, if known
-    Option(unionReads.head.getRecordGroupPlatformUnit)
-      .foreach(p => builder.setInstrument(p))
 
     // set record group name, if known
     Option(unionReads.head.getRecordGroupName)

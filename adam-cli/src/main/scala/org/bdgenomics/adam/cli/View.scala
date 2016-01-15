@@ -19,6 +19,7 @@ package org.bdgenomics.adam.cli
 
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
+import org.bdgenomics.adam.models.{ RecordGroupDictionary, SequenceDictionary }
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd.ADAMSaveAnyArgs
 import org.bdgenomics.formats.avro.AlignmentRecord
@@ -36,41 +37,47 @@ class ViewArgs extends Args4jBase with ParquetArgs with ADAMSaveAnyArgs {
     required = false,
     name = "-f",
     metaVar = "N",
-    usage = "Restrict to reads that match all of the bits in <N>")
+    usage = "Restrict to reads that match all of the bits in <N>"
+  )
   var matchAllBits: Int = 0
 
   @Args4jOption(
     required = false,
     name = "-F",
     metaVar = "N",
-    usage = "Restrict to reads that match none of the bits in <N>")
+    usage = "Restrict to reads that match none of the bits in <N>"
+  )
   var mismatchAllBits: Int = 0
 
   @Args4jOption(
     required = false,
     name = "-g",
     metaVar = "N",
-    usage = "Restrict to reads that match any of the bits in <N>")
+    usage = "Restrict to reads that match any of the bits in <N>"
+  )
   var matchSomeBits: Int = 0
 
   @Args4jOption(
     required = false,
     name = "-G",
     metaVar = "N",
-    usage = "Restrict to reads that mismatch at least one of the bits in <N>")
+    usage = "Restrict to reads that mismatch at least one of the bits in <N>"
+  )
   var mismatchSomeBits: Int = 0
 
   @Args4jOption(
     required = false,
     name = "-c",
-    usage = "Print count of matching records, instead of the records themselves")
+    usage = "Print count of matching records, instead of the records themselves"
+  )
   var printCount: Boolean = false
 
   @Args4jOption(
     required = false,
     name = "-o",
     metaVar = "<FILE>",
-    usage = "Output to <FILE>; can also pass <FILE> as the second argument")
+    usage = "Output to <FILE>; can also pass <FILE> as the second argument"
+  )
   var outputPathArg: String = null
 
   @Args4jOption(required = false, name = "-sort_fastq_output", usage = "Sets whether to sort the FASTQ output, if saving as FASTQ. False by default. Ignored if not saving as FASTQ.")
@@ -126,8 +133,8 @@ class View(val args: ViewArgs) extends BDGSparkCommand[ViewArgs] {
       getFilter(0x8, read => read.getReadPaired && !read.getMateMapped),
       getFilter(0x10, _.getReadNegativeStrand),
       getFilter(0x20, _.getMateNegativeStrand),
-      getFilter(0x40, _.getReadNum == 0),
-      getFilter(0x80, _.getReadNum == 1),
+      getFilter(0x40, _.getReadInFragment == 0),
+      getFilter(0x80, _.getReadInFragment == 1),
       getFilter(0x100, !_.getPrimaryAlignment),
       getFilter(0x200, _.getFailedVendorQualityChecks),
       getFilter(0x400, _.getDuplicateRead),
@@ -148,23 +155,22 @@ class View(val args: ViewArgs) extends BDGSparkCommand[ViewArgs] {
       reads.filter(read =>
         allFilters.forall(_(read)) &&
           (matchSomeFilters.isEmpty || matchSomeFilters.exists(_(read))) &&
-          (mismatchSomeFilters.isEmpty || mismatchSomeFilters.exists(_(read)))
-      )
+          (mismatchSomeFilters.isEmpty || mismatchSomeFilters.exists(_(read))))
     } else
       reads
   }
 
   def run(sc: SparkContext) = {
 
-    val reads: RDD[AlignmentRecord] = applyFilters(sc.loadAlignments(args.inputPath))
+    val reads = applyFilters(sc.loadAlignments(args.inputPath))
 
     if (args.outputPath != null)
-      reads.adamAlignedRecordSave(args)
+      reads.adamAlignedRecordSave(args, SequenceDictionary.empty, RecordGroupDictionary.empty)
     else {
       if (args.printCount) {
         println(reads.count())
       } else {
-        println(reads.adamSAMString)
+        println(reads.adamSAMString(SequenceDictionary.empty, RecordGroupDictionary.empty))
       }
     }
   }

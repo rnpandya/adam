@@ -21,7 +21,7 @@ import htsjdk.samtools.{ SAMFileHeader, SAMRecord }
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models._
 import org.bdgenomics.adam.rich.RichAlignmentRecord
-import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment, Sequence }
+import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
 import scala.collection.JavaConversions._
 
 class AlignmentRecordConverter extends Serializable {
@@ -39,21 +39,36 @@ class AlignmentRecordConverter extends Serializable {
    * @param adamRecord Read to convert to FASTQ.
    * @return Returns this read in string form.
    */
-  def convertToFastq(adamRecord: AlignmentRecord,
-                     maybeAddSuffix: Boolean = false,
-                     outputOriginalBaseQualities: Boolean = false): String = {
+  def convertToFastq(
+    adamRecord: AlignmentRecord,
+    maybeAddSuffix: Boolean = false,
+    outputOriginalBaseQualities: Boolean = false): String = {
     val readNameSuffix =
       if (maybeAddSuffix &&
         !AlignmentRecordConverter.readNameHasPairedSuffix(adamRecord) &&
         adamRecord.getReadPaired) {
-        "/%d".format(adamRecord.getReadNum + 1)
+        "/%d".format(adamRecord.getReadInFragment + 1)
       } else {
         ""
       }
 
+    //"B" is used to represent "unknown quality score"
+    //https://en.wikipedia.org/wiki/FASTQ_format#cite_note-7
+    //FastQ format quality score string must be the same length as the sequence string
+    //https://en.wikipedia.org/wiki/FASTQ_format#Format
+    val seqLength =
+      if (adamRecord.getSequence == null)
+        0
+      else
+        adamRecord.getSequence.length
     val qualityScores =
       if (outputOriginalBaseQualities && adamRecord.getOrigQual != null)
-        adamRecord.getOrigQual
+        if (adamRecord.getOrigQual == "*")
+          "B" * seqLength
+        else
+          adamRecord.getOrigQual
+      else if (adamRecord.getQual == null)
+        "B" * seqLength
       else
         adamRecord.getQual
 
@@ -78,16 +93,15 @@ class AlignmentRecordConverter extends Serializable {
    * @param header SAM file header to use.
    * @return Returns the record converted to SAMtools format. Can be used for output to SAM/BAM.
    */
-  def convert(adamRecord: AlignmentRecord, header: SAMFileHeaderWritable): SAMRecord = ConvertToSAMRecord.time {
-
-    // get read group dictionary from header
-    val rgDict = header.header.getSequenceDictionary
+  def convert(adamRecord: AlignmentRecord,
+              header: SAMFileHeaderWritable,
+              rgd: RecordGroupDictionary): SAMRecord = ConvertToSAMRecord.time {
 
     // attach header
     val builder: SAMRecord = new SAMRecord(header.header)
 
     // set canonically necessary fields
-    builder.setReadName(adamRecord.getReadName.toString)
+    builder.setReadName(adamRecord.getReadName)
     builder.setReadString(adamRecord.getSequence)
     adamRecord.getQual match {
       case null      => builder.setBaseQualityString("*")
@@ -96,18 +110,16 @@ class AlignmentRecordConverter extends Serializable {
 
     // set read group flags
     Option(adamRecord.getRecordGroupName)
-      .map(_.toString)
-      .map(rgDict.getSequenceIndex)
-      .foreach(v => builder.setAttribute("RG", v.toString))
-    Option(adamRecord.getRecordGroupLibrary)
-      .foreach(v => builder.setAttribute("LB", v.toString))
-    Option(adamRecord.getRecordGroupPlatformUnit)
-      .foreach(v => builder.setAttribute("PU", v.toString))
+      .foreach(v => {
+        builder.setAttribute("RG", rgd.getIndex(v))
+        val rg = rgd(v)
+        rg.library.foreach(v => builder.setAttribute("LB", v))
+        rg.platformUnit.foreach(v => builder.setAttribute("PU", v))
+      })
 
     // set the reference name, and alignment position, for mate
     Option(adamRecord.getMateContig)
       .map(_.getContigName)
-      .map(_.toString)
       .foreach(builder.setMateReferenceName)
     Option(adamRecord.getMateAlignmentStart)
       .foreach(s => builder.setMateAlignmentStart(s.toInt + 1))
@@ -128,9 +140,9 @@ class AlignmentRecordConverter extends Serializable {
           .foreach(v => builder.setMateUnmappedFlag(!v.booleanValue))
         Option(adamRecord.getProperPair)
           .foreach(v => builder.setProperPairFlag(v.booleanValue))
-        Option(adamRecord.getReadNum == 0)
+        Option(adamRecord.getReadInFragment == 0)
           .foreach(v => builder.setFirstOfPairFlag(v.booleanValue))
-        Option(adamRecord.getReadNum == 1)
+        Option(adamRecord.getReadInFragment == 1)
           .foreach(v => builder.setSecondOfPairFlag(v.booleanValue))
       }
     })
@@ -147,9 +159,9 @@ class AlignmentRecordConverter extends Serializable {
           builder.setReferenceName(adamRecord.getContig.getContigName)
 
           // set the cigar, if provided
-          Option(adamRecord.getCigar).map(_.toString).foreach(builder.setCigarString)
+          Option(adamRecord.getCigar).foreach(builder.setCigarString)
           // set the old cigar, if provided
-          Option(adamRecord.getOldCigar).map(_.toString).foreach(v => builder.setAttribute("OC", v))
+          Option(adamRecord.getOldCigar).foreach(v => builder.setAttribute("OC", v))
           // set mapping flags
           Option(adamRecord.getReadNegativeStrand)
             .foreach(v => builder.setReadNegativeStrandFlag(v.booleanValue))
@@ -170,7 +182,6 @@ class AlignmentRecordConverter extends Serializable {
     Option(adamRecord.getFailedVendorQualityChecks)
       .foreach(v => builder.setReadFailsVendorQualityCheckFlag(v.booleanValue))
     Option(adamRecord.getMismatchingPositions)
-      .map(_.toString)
       .foreach(builder.setAttribute("MD", _))
 
     // add all other tags
@@ -181,7 +192,7 @@ class AlignmentRecordConverter extends Serializable {
       })
     }
 
-    // return sam record 
+    // return sam record
     builder
   }
 

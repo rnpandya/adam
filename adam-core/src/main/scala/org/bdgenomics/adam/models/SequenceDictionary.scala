@@ -29,7 +29,11 @@ import scala.collection._
  */
 
 object SequenceDictionary {
-  def apply(): SequenceDictionary = new SequenceDictionary()
+  /**
+   * @return Creates a new, empty SequenceDictionary.
+   */
+  def empty: SequenceDictionary = new SequenceDictionary()
+
   def apply(records: SequenceRecord*): SequenceDictionary = new SequenceDictionary(records.toVector)
   def apply(dict: SAMSequenceDictionary): SequenceDictionary = {
     new SequenceDictionary(dict.getSequences.map(SequenceRecord.fromSAMSequenceRecord).toVector)
@@ -85,7 +89,7 @@ class SequenceDictionary(val records: Vector[SequenceRecord]) extends Serializab
   def isCompatibleWith(that: SequenceDictionary): Boolean = {
     for (record <- that.records) {
       val myRecord = byName.get(record.name)
-      if (myRecord.isDefined && myRecord.get != record)
+      if (myRecord.exists(_ != record))
         return false
     }
     true
@@ -111,12 +115,42 @@ class SequenceDictionary(val records: Vector[SequenceRecord]) extends Serializab
    * @return Returns a SAM formatted sequence dictionary.
    */
   def toSAMSequenceDictionary: SAMSequenceDictionary = {
+    new SAMSequenceDictionary(records.map(_ toSAMSequenceRecord).toList)
+  }
+
+  /**
+   * Strips indices from a Sequence Dictionary.
+   *
+   * @return This returns a new sequence dictionary devoid of indices. This is
+   *   important for sorting: the default sort in ADAM is based on a lexical
+   *   ordering, while the default sort in SAM is based on sequence indices. If
+   *   the indices are not stripped before a file is saved back to SAM/BAM, the
+   *   SAM/BAM header sequence ordering will not match the sort order of the
+   *   records in the file.
+   *
+   * @see sorted
+   */
+  def stripIndices: SequenceDictionary = {
+    new SequenceDictionary(records.map(_.stripIndex))
+  }
+
+  /**
+   * Sort the records in a sequence dictionary.
+   *
+   * @return Returns a new sequence dictionary where the sequence records are
+   *   sorted. If the sequence records have indices, the records will be sorted
+   *   by their indices. If not, the sequence records will be sorted lexically
+   *   by contig name.
+   *
+   * @see stripIndices
+   */
+  def sorted: SequenceDictionary = {
     implicit val ordering: Ordering[SequenceRecord] =
       if (hasSequenceOrdering)
         SequenceOrderingByRefIdx
       else
         SequenceOrderingByName
-    new SAMSequenceDictionary(records.sorted.map(_ toSAMSequenceRecord).toList)
+    new SequenceDictionary(records.sorted)
   }
 
   override def toString: String = {
@@ -125,15 +159,17 @@ class SequenceDictionary(val records: Vector[SequenceRecord]) extends Serializab
 }
 
 object SequenceOrderingByName extends Ordering[SequenceRecord] {
-  def compare(a: SequenceRecord,
-              b: SequenceRecord): Int = {
+  def compare(
+    a: SequenceRecord,
+    b: SequenceRecord): Int = {
     a.name.compareTo(b.name)
   }
 }
 
 object SequenceOrderingByRefIdx extends Ordering[SequenceRecord] {
-  def compare(a: SequenceRecord,
-              b: SequenceRecord): Int = {
+  def compare(
+    a: SequenceRecord,
+    b: SequenceRecord): Int = {
     (for {
       aRefIdx <- a.referenceIndex
       bRefIdx <- b.referenceIndex
@@ -163,7 +199,24 @@ case class SequenceRecord(
   assert(name != null && !name.isEmpty, "SequenceRecord.name is null or empty")
   assert(length > 0, "SequenceRecord.length <= 0")
 
-  override def toString: String = "%s->%s".format(name, length)
+  /**
+   * @return Returns a new sequence record with the index unset.
+   */
+  def stripIndex: SequenceRecord = {
+    SequenceRecord(name,
+      length,
+      url,
+      md5,
+      refseq,
+      genbank,
+      assembly,
+      species,
+      None)
+  }
+
+  override def toString: String = "%s->%s%s".format(name,
+    length,
+    referenceIndex.fold("")(d => ", %d".format(d)))
 
   /**
    * Converts this sequence record into a SAM sequence record.
@@ -171,7 +224,7 @@ case class SequenceRecord(
    * @return A SAM formatted sequence record.
    */
   def toSAMSequenceRecord: SAMSequenceRecord = {
-    val rec = new SAMSequenceRecord(name.toString, length.toInt)
+    val rec = new SAMSequenceRecord(name, length.toInt)
 
     // set md5 if available
     md5.foreach(s => rec.setAttribute(SAMSequenceRecord.MD5_TAG, s.toUpperCase))
@@ -214,24 +267,25 @@ object SequenceRecord {
   val REFSEQ_TAG = "REFSEQ"
   val GENBANK_TAG = "GENBANK"
 
-  def apply(name: String,
-            length: Long,
-            md5: String = null,
-            url: String = null,
-            refseq: String = null,
-            genbank: String = null,
-            assembly: String = null,
-            species: String = null,
-            referenceIndex: Option[Int] = None): SequenceRecord = {
+  def apply(
+    name: String,
+    length: Long,
+    md5: String = null,
+    url: String = null,
+    refseq: String = null,
+    genbank: String = null,
+    assembly: String = null,
+    species: String = null,
+    referenceIndex: Option[Int] = None): SequenceRecord = {
     new SequenceRecord(
       name,
       length,
-      Option(url).map(_.toString),
-      Option(md5).map(_.toString),
-      Option(refseq).map(_.toString),
-      Option(genbank).map(_.toString),
-      Option(assembly).map(_.toString),
-      Option(species).map(_.toString),
+      Option(url),
+      Option(md5),
+      Option(refseq),
+      Option(genbank),
+      Option(assembly),
+      Option(species),
       referenceIndex
     )
   }
@@ -258,8 +312,8 @@ object SequenceRecord {
   }
   def toSAMSequenceRecord(record: SequenceRecord): SAMSequenceRecord = {
     val sam = new SAMSequenceRecord(record.name, record.length.toInt)
-    record.md5.foreach(v => sam.setAttribute(SAMSequenceRecord.MD5_TAG, v.toString))
-    record.url.foreach(v => sam.setAttribute(SAMSequenceRecord.URI_TAG, v.toString))
+    record.md5.foreach(v => sam.setAttribute(SAMSequenceRecord.MD5_TAG, v))
+    record.url.foreach(v => sam.setAttribute(SAMSequenceRecord.URI_TAG, v))
     sam
   }
 

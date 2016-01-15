@@ -45,11 +45,12 @@ case class GenomicPositionPartitioner(numParts: Int, seqLengths: Map[String, Lon
   private val cumuls: Seq[Long] = lengths.scan(0L)(_ + _)
 
   // total # of bases in the sequence dictionary
-  val totalLength: Long = lengths.reduce(_ + _)
+  val totalLength: Long = lengths.sum
 
   // referenceName -> cumulative length before this sequence (using seqDict.records as the implicit ordering)
   val cumulativeLengths: Map[String, Long] = Map(
-    names.zip(cumuls): _*)
+    names.zip(cumuls): _*
+  )
 
   /**
    * 'parts' is the total number of partitions for non-UNMAPPED ReferencePositions --
@@ -78,9 +79,13 @@ case class GenomicPositionPartitioner(numParts: Int, seqLengths: Map[String, Lon
 
       // everything else gets assigned normally.
       case refpos: ReferencePosition => {
-        require(seqLengths.contains(refpos.referenceName),
-          "Received key (%s) that did not map to a known contig. Contigs are:\n%s".format(refpos,
-            seqLengths.keys.mkString("\n")))
+        require(
+          seqLengths.contains(refpos.referenceName),
+          "Received key (%s) that did not map to a known contig. Contigs are:\n%s".format(
+            refpos,
+            seqLengths.keys.mkString("\n")
+          )
+        )
         getPart(refpos.referenceName, refpos.pos)
       }
 
@@ -97,11 +102,18 @@ case class GenomicPositionPartitioner(numParts: Int, seqLengths: Map[String, Lon
 
 object GenomicPositionPartitioner {
 
+  /**
+   * Creates a GenomicRegionPartitioner with a specific number of partitions.
+   *
+   * @param numParts The number of partitions to have in the new partitioner.
+   * @param seqDict A sequence dictionary describing the known genomic contigs.
+   * @return Returns a partitioner that divides the known genome into a set number of partitions.
+   */
   def apply(numParts: Int, seqDict: SequenceDictionary): GenomicPositionPartitioner =
     GenomicPositionPartitioner(numParts, extractLengthMap(seqDict))
 
-  def extractLengthMap(seqDict: SequenceDictionary): Map[String, Long] =
-    Map(seqDict.records.toSeq.map(rec => (rec.name.toString, rec.length)): _*)
+  private[rdd] def extractLengthMap(seqDict: SequenceDictionary): Map[String, Long] =
+    seqDict.records.toSeq.map(rec => (rec.name, rec.length)).toMap
 }
 
 case class GenomicRegionPartitioner(partitionSize: Long, seqLengths: Map[String, Long], start: Boolean = true) extends Partitioner with Logging {
@@ -120,9 +132,13 @@ case class GenomicRegionPartitioner(partitionSize: Long, seqLengths: Map[String,
   override def getPartition(key: Any): Int = {
     key match {
       case region: ReferenceRegion => {
-        require(seqLengths.contains(region.referenceName),
-          "Received key (%s) that did not map to a known contig. Contigs are:\n%s".format(region,
-            seqLengths.keys.mkString("\n")))
+        require(
+          seqLengths.contains(region.referenceName),
+          "Received key (%s) that did not map to a known contig. Contigs are:\n%s".format(
+            region,
+            seqLengths.keys.mkString("\n")
+          )
+        )
         computePartition(region)
       }
       case _ => throw new IllegalArgumentException("Only ReferenceMappable values can be partitioned by GenomicRegionPartitioner")
@@ -131,6 +147,26 @@ case class GenomicRegionPartitioner(partitionSize: Long, seqLengths: Map[String,
 }
 
 object GenomicRegionPartitioner {
+
+  /**
+   * Creates a GenomicRegionPartitioner where partitions cover a specific range of the genome.
+   *
+   * @param partitionSize The number of bases in the reference genome that each partition should cover.
+   * @param seqDict A sequence dictionary describing the known genomic contigs.
+   * @return Returns a partitioner that divides the known genome into partitions of fixed size.
+   */
   def apply(partitionSize: Long, seqDict: SequenceDictionary): GenomicRegionPartitioner =
     GenomicRegionPartitioner(partitionSize, GenomicPositionPartitioner.extractLengthMap(seqDict))
+
+  /**
+   * Creates a GenomicRegionPartitioner with a specific number of partitions.
+   *
+   * @param numParts The number of partitions to have in the new partitioner.
+   * @param seqDict A sequence dictionary describing the known genomic contigs.
+   * @return Returns a partitioner that divides the known genome into a set number of partitions.
+   */
+  def apply(numParts: Int, seqDict: SequenceDictionary): GenomicRegionPartitioner = {
+    val lengths = GenomicPositionPartitioner.extractLengthMap(seqDict)
+    GenomicRegionPartitioner(lengths.values.sum / numParts, lengths)
+  }
 }
